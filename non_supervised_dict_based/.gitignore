@@ -1,5 +1,5 @@
 *.txt
 .vscode/
-pickled_data/
+pickled_data/*
 __pycache__/
-data/
+data/*
