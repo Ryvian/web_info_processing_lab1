@@ -1,6 +1,8 @@
 ## Non Supervised Model
+Packages required: `pip3 install numpy, jieba, pandas, numba, pathos`
+
 You can use it with running `main_non_supervised_model.py` (I use python3.7).
-You may lower the content_prop to speed up the process (with worse result), and tuning title_weight to improve the result.
+You may lower `content_prop` to speed up the process (with worse result), and tuning `title_weight` to improve the result.
 ### Problems
 - Complete TF-iDF table is too large (~330000 word items, 13000 documents). If we store it with simple matrix, it takes ~35GB. No memory. (however it is sparse). 
 - Dict based version used the sparsity, store the TF-iDF table with a 2-D dict. However the performance is poor. The bottleneck may be that it needs to rebuild the vector for each document for each query.
