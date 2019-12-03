@@ -3,3 +3,5 @@
 pickled_data/*
 __pycache__/
 data/*
+
+!*.gitkeep

@@ -10,6 +10,12 @@ import jieba
 from numba import jitclass, njit
 import numba
 import random
+# using pathos for "multiprocess"  here
+# install by: pip install pathos
+from multiprocess import Pool
+from itertools import chain
+
+NUM_PROCESSES = 4
 
 spec = [
     ('iDF', numba.types.DictType(
@@ -255,19 +261,36 @@ class VSMRetrieval:
         """
         get the most similar K docs' ids, using VSM and cosine similarity
         """
-        doc_list = []
         s_vector = self.get_relation_vector(s)
-        for doc in self.TF_iDF:
-            doc_vector = self.get_TF_iDF_doc_vector(doc)
-            sim = self.get_similarity(s_vector, doc_vector, s, doc)
-            #maintain top K list
-            if len(doc_list) < topK:
-                doc_list.append((sim, doc))
-                doc_list.sort(key=lambda x: x[0], reverse=True)
-            elif sim > doc_list[-1][0]:
-                doc_list[-1] = (sim, doc)
-                doc_list.sort(key=lambda x: x[0], reverse=True)
-        return doc_list
+
+        def get_topK_aux(keys):
+            doc_list = []
+            for doc in keys:
+                doc_vector = self.get_TF_iDF_doc_vector(doc)
+                sim = self.get_similarity(s_vector, doc_vector, s, doc)
+                #maintain top K list
+                if len(doc_list) < topK:
+                    doc_list.append((sim, doc))
+                    doc_list.sort(key=lambda x: x[0], reverse=True)
+                elif sim > doc_list[-1][0]:
+                    doc_list[-1] = (sim, doc)
+                    doc_list.sort(key=lambda x: x[0], reverse=True)
+            return doc_list
+
+        pool = Pool(processes=NUM_PROCESSES)
+        chunk_size = len(self.TF_iDF) // NUM_PROCESSES
+        keys = list(self.TF_iDF.keys())
+        result_list = []
+        for i in range(NUM_PROCESSES-1):
+            res = pool.apply_async(get_topK_aux, (keys[i*chunk_size:(i+1)*chunk_size],))
+            result_list.append(res)
+        res = pool.apply_async(get_topK_aux, (keys[(NUM_PROCESSES-1)*chunk_size:],))
+        result_list.append(res)
+        doc_list = []
+        for res in result_list:
+            doc_list += res.get()
+        doc_list.sort(key=lambda x: x[0], reverse=True)
+        return doc_list[:topK]
 
 
 if __name__ == "__main__":
