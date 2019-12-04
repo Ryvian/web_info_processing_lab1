@@ -3,7 +3,7 @@ import csv, os
 
 
 TITLE_WEIGHT = 5
-CONTENT_PROP = 0
+CONTENT_PROP = 0.035
 
 
 def get_submission_file_path(title_weight):
@@ -12,7 +12,7 @@ def get_submission_file_path(title_weight):
 
 def read_test_queries():
     queries = []
-    with open('../data/test_data/test_querys.csv', encoding='utf-8') as f:
+    with open('../data/test_data/test_querys2.csv', encoding='utf-8') as f:
         reader = csv.reader(f)
         header = next(reader)
         for row in reader:
@@ -22,7 +22,7 @@ def read_test_queries():
 
 def generate_submission(title_weight, build_everything=True):
     if build_everything:
-        vsm = VSMRetrieval('data/test_data/test_docs.csv', title_weight=title_weight, content_prop=CONTENT_PROP)
+        vsm = VSMRetrieval('../data/test_data/test_docs.csv', title_weight=title_weight, content_prop=CONTENT_PROP)
     else:
         vsm = VSMRetrieval('', title_weight=title_weight,content_prop=CONTENT_PROP)
     queries = read_test_queries()
@@ -40,7 +40,7 @@ weight_list = [TITLE_WEIGHT]
 if __name__ == "__main__":
     for weight in weight_list:
         print("now generating submission with weight = ", weight)
-        if weight_list == weight_list[0]:
+        if weight == weight_list[0]:
             generate_submission(weight, True)
         else:
             generate_submission(weight, False)

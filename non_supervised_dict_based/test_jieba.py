@@ -22,7 +22,7 @@ if __name__ == '__main__':
     # df3 = pd.read_hdf('test.hdf', key='df')
     # print(df3, type(df3))
 
-    vsm = VSMRetrieval(title_weight=1, content_prop=0)
+    vsm = VSMRetrieval(title_weight=5, content_prop=0.035, load_object=True)
     string = "年均增长率怎么算"
     print("length of word_list:", len(vsm.iDF))
     print("length of docs_ids:", len(vsm.TF_iDF))

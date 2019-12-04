@@ -8,7 +8,15 @@ import numpy as np
 import pandas as pd
 import jieba
 from numba import jitclass, njit
+from utils import DistributedFile
 import numba
+import random
+# using pathos for "multiprocess"  here
+# install by: pip install pathos
+from multiprocess import Pool
+from itertools import chain
+
+NUM_PROCESSES = 4
 
 spec = [
     ('iDF', numba.types.DictType(
@@ -27,76 +35,19 @@ spec = [
 ]
 
 
-class DistributedFile:
-    """save and read data in/from multiple files. 
-    Used for the TF_iDF table here (word_list length: 336082, doc numbers: 13139). Need about 35 GB memory
-    """
-    def __init__(self, name='data', dir_path='./pickled_data'):
-        self.index = {}
-        self.name = name
-        self.obj = {}
-        self.obj_index = -1
-        self.dir_path = dir_path
-
-    def dump(self, data: dict,  func=lambda x: x, chunk_size=512):
-        index = 0
-        to_dump = {}
-        for i, key in enumerate(data):
-            self.index[key] = index
-            to_dump[key] = func(data[key])
-            if (i % chunk_size) == chunk_size - 1:
-                with open(os.path.join(
-                        self.dir_path, 
-                        'distributed_file_{}_{}.pickle'.format(self.name, index)), 'wb') as f:
-                    pickle.dump(to_dump, f)
-                del to_dump
-                to_dump = {}
-                index += 1
-        if len(to_dump) != 0:
-            with open(os.path.join(
-                    self.dir_path,
-                    'distributed_file_{}_{}.pickle'.format(self.name, index)), 'wb') as f:
-                    pickle.dump(to_dump, f)
-            del to_dump
-        with open(os.path.join(
-                self.dir_path, 
-                'index_distributed_file_{}.pickle'.format(self.name)), 'wb') as f:
-                    pickle.dump(self.index, f)
-    
-    def read(self, key):
-        if self.obj_index == -1:
-            with open(os.path.join(self.dir_path, 'index_distributed_file_{}.pickle'.format(self.name)), 'rb') as f:
-                self.index = pickle.load(f)
-            self.obj_index = self.index[key]
-            with open(os.path.join(self.dir_path, 'distributed_file_{}_{}.pickle'.format(self.name, self.obj_index)), 'rb') as f:
-                self.obj = pickle.load(f)
-            return self.obj[key]
-        else:
-            if self.index[key] == self.obj_index:
-                return self.obj[key]
-            else:
-                self.obj_index = self.index[key]
-                with open(os.path.join(self.dir_path, 'distributed_file_{}_{}.pickle'.format(self.name, self.obj_index)), 'rb') as f:
-                    self.obj = pickle.load(f)
-                return self.obj[key]
-            
-
-
-
-CHUNK_SIZE = 500
 
 class VSMRetrieval:
     """
-    build TF-iDF model, use VSM to get the ranking of docs of a request
+    build TF-iDF model, use VSM to get the relevant docs of a query
 
     """
-    def __init__(self, filename='', title_weight=1, load_object=False):
+    def __init__(self, filename='', title_weight=1, content_prop=1, load_object=False):
         """
         filename: *(default: '')*. The original csv file you want to load doc 
         data from to build the model
             if filename is '':
                 if load_object is False:
-                    load pickled data for title_TF and content_TF, iDF, word_list.
+                    load pickled data for title_TF and content_TF.
                     Others are rebuilt
                 if load_object is True:
                     load all data for this object from history, if the corresponding 
@@ -104,12 +55,18 @@ class VSMRetrieval:
             else:
                 rebuild everything according to the data in the file path
 
+        content_prop:
+            float: 0~1
+            the proportion of the words in content considered in processing
+            the lower the quicker (but less informative or accurate)
+
         title_weight:
             >=0
             the weight of words in title relative to that in content, used when calculate TF
         """
         #build TF, iDF, TF-iDF table, and pickle them
         # jieba.enable_parallel(8)
+        self.TF_iDF_table = None
         if filename != '':
             title_TF = dict()
             TF = dict()
@@ -145,34 +102,33 @@ class VSMRetrieval:
                                 TF[word][doc_id] = 1
                         else:
                             TF[word] = {doc_id: 1}
-            # del doc_id_set
             with open('pickled_data/title_TF.pickle', 'wb') as f:
                 pickle.dump(title_TF, f)
             with open('pickled_data/content_TF.pickle', 'wb') as f:
                 pickle.dump(TF, f)
             with open('pickled_data/doc_ids.pickle', 'wb') as f:
                 pickle.dump(doc_ids, f)
-            self.merge_TF_table(title_TF, TF, title_weight)
-            self.word_list = list(TF.keys())
-            self.word_set = set(self.word_list)
+            self.merge_TF_table(title_TF, TF, title_weight, content_prop)
             #build iDF table
-            self.iDF = dict()
+            self.iDF = self.build_iDF(TF, doc_ids)
             # self.iDF = numba.typed.Dict.empty(
             #     key_type=numba.types.unicode_type,
             #     value_type=numba.types.float64
             # )
-            for key in TF:
-                idf = math.log10(len(doc_ids) / len(TF[key]))
-                self.iDF[key] = idf
+        
             self.TF_iDF = self.build_TF_iDF_table(TF, doc_ids)
+            dist_file = DistributedFile(name='TF_iDF')
+            dist_file.dump(self.TF_iDF,)
             self.pickle(title_weight)
+
 
         else:
             #load from pickled file directly if corresponding data exists
             if load_object:
                self.load(title_weight)
 
-            #only load title_TF and content_TF, iDF, rebuild others. title_weight has effect
+            #only load title_TF and content_TF, rebuild others. 
+            # title_weight and content_prop has effect
             else:
                 with open('pickled_data/title_TF.pickle', 'rb') as f:
                     title_TF = pickle.load(f)
@@ -182,24 +138,31 @@ class VSMRetrieval:
                     print('content_TF length:', len(TF))
                 with open('pickled_data/doc_ids.pickle', 'rb') as f:
                     doc_ids = pickle.load(f)
-                with open('pickled_data/iDF.pickle', 'rb') as f:
-                    self.iDF = pickle.load(f)
-                with open('pickled_data/word_list.pickle', 'rb') as f:
-                    self.word_list = pickle.load(f)
-                    self.word_set = set(self.word_list)
                 print('before merge')
-                self.merge_TF_table(title_TF, TF, title_weight)
+                self.merge_TF_table(title_TF, TF, title_weight, content_prop=content_prop)
                 print('after merge')
+                self.iDF = self.build_iDF(TF,doc_ids)
                 print('before build TF_iDF')
                 self.TF_iDF = self.build_TF_iDF_table(TF, doc_ids)
                 print('after build TF_iDF')
-                self.pickle(title_weight=title_weight, only_TF_iDF=True)
+                self.pickle(title_weight=title_weight)
       
-    def merge_TF_table(self, title_TF: dict, content_TF: dict, title_weight: float):
+    def build_iDF(self, TF, doc_ids):
+        iDF = {}
+        for key in TF:
+            idf = math.log10(len(doc_ids) / len(TF[key]))
+            iDF[key] = idf
+        return iDF
+
+    def merge_TF_table(self, title_TF: dict, content_TF: dict, title_weight: float, content_prop: float):
         """
         merge title_TF and content_TF in place, with title_TF multipilied by title_weight
         result are in content_TF
         """
+        del_num = round(len(content_TF) * (1 - content_prop))
+        del_word_list = random.sample(content_TF.keys(), del_num)
+        for word in del_word_list:
+            del content_TF[word]
         for word, TF_dict in title_TF.items():
             if word not in content_TF:
                 new_TF_dict = {}
@@ -246,27 +209,36 @@ class VSMRetrieval:
             return 0.0
         return 1 + math.log10(tf)
 
+    def distributed_file_TF_iDF(self):
+        def get_TF_iDF_dict_vector(data):
+            vector = []
+            for word in self.iDF:
+                if word in data:
+                    value = data[word]
+                else: 
+                    value = 0.0
+                vector.append(value)
+            return np.array(vector, dtype=np.float64)
+
+        self.TF_iDF_table = DistributedFile(name='TF_iDF').dump(self.TF_iDF, func=get_TF_iDF_dict_vector)
+
+
     def pickle(self, title_weight, only_TF_iDF=False):
-        with open('pickled_data/TF_iDF_{}.pickle'.format(title_weight), 'wb') as f:
-            pickle.dump(self.TF_iDF, f)
+
+
         if not only_TF_iDF:
             with open('pickled_data/iDF.pickle', 'wb') as f:
                 pickle.dump(self.iDF, f)
-            with open('pickled_data/word_list.pickle', 'wb') as f:
-                pickle.dump(self.word_list, f)
     
     def load(self, title_weight):
         with open('pickled_data/iDF.pickle', 'rb') as f:
             self.iDF = pickle.load(f)
         with open('pickled_data/TF_iDF_{}.pickle'.format(title_weight), 'rb') as f:
             self.TF_iDF = pickle.load(f)
-        with open('pickled_data/word_list.pickle', 'rb') as f:
-            self.word_list = pickle.load(f)
-            self.word_set = set(self.word_list)
 
-    def get_TF_iDF_doc_vector(self, doc: str):
+    def get_TF_iDF_dict_doc_vector(self, data):
         vector = []
-        for word in self.word_list:
+        for word in self.iDF:
             vector.append(self.get_TF_iDF_value(word, doc))
         return np.array(vector, dtype=np.float64)
 
@@ -275,11 +247,11 @@ class VSMRetrieval:
         calculate relation vector for a string
         """
         vector = {}
-        for word in self.word_list:
+        for word in self.iDF:
             vector[word] = 0.0
         seg_list = jieba.cut_for_search(s)
         for word in seg_list:
-            if word in self.word_set:
+            if word in self.iDF:
                 vector[word] += 1.0
         vector_list = []
         for word in vector:
@@ -296,10 +268,10 @@ class VSMRetrieval:
         norm1 = np.linalg.norm(vec1)
         norm2 = np.linalg.norm(vec2)
         if norm1 == 0.0:
-            print('warning: questionable query "' + s + '": vector norm == 0')
+            print('warning: questionable query, vector norm == 0: '+ s)
             return -1
         if norm2 == 0.0:
-            print('Warning: questionable doc "' + doc + '": vector norm == 0')
+            print('Warning: questionable doc, vector norm == 0: '+ doc)
             return -1
         return np.dot(vec1, vec2) / (norm1 * norm2)
 
@@ -307,19 +279,36 @@ class VSMRetrieval:
         """
         get the most similar K docs' ids, using VSM and cosine similarity
         """
-        doc_list = []
         s_vector = self.get_relation_vector(s)
-        for doc in self.TF_iDF:
-            doc_vector = self.get_TF_iDF_doc_vector(doc)
-            sim = self.get_similarity(s_vector, doc_vector, s, doc)
-            #maintain top K list
-            if len(doc_list) < topK:
-                doc_list.append((sim, doc))
-                doc_list.sort(key=lambda x: x[0], reverse=True)
-            elif sim > doc_list[-1][0]:
-                doc_list[-1] = (sim, doc)
-                doc_list.sort(key=lambda x: x[0], reverse=True)
-        return doc_list
+
+        def get_topK_aux(keys):
+            doc_list = []
+            for doc in keys:
+                doc_vector = self.get_TF_iDF_doc_vector(doc)
+                sim = self.get_similarity(s_vector, doc_vector, s, doc)
+                #maintain top K list
+                if len(doc_list) < topK:
+                    doc_list.append((sim, doc))
+                    doc_list.sort(key=lambda x: x[0], reverse=True)
+                elif sim > doc_list[-1][0]:
+                    doc_list[-1] = (sim, doc)
+                    doc_list.sort(key=lambda x: x[0], reverse=True)
+            return doc_list
+
+        pool = Pool(processes=NUM_PROCESSES)
+        chunk_size = len(self.TF_iDF) // NUM_PROCESSES
+        keys = list(self.TF_iDF.keys())
+        result_list = []
+        for i in range(NUM_PROCESSES-1):
+            res = pool.apply_async(get_topK_aux, (keys[i*chunk_size:(i+1)*chunk_size],))
+            result_list.append(res)
+        res = pool.apply_async(get_topK_aux, (keys[(NUM_PROCESSES-1)*chunk_size:],))
+        result_list.append(res)
+        doc_list = []
+        for res in result_list:
+            doc_list += res.get()
+        doc_list.sort(key=lambda x: x[0], reverse=True)
+        return doc_list[:topK]
 
 
 if __name__ == "__main__":

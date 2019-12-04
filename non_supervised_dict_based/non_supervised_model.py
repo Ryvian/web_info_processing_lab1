@@ -286,6 +286,8 @@ class VSMRetrieval:
             result_list.append(res)
         res = pool.apply_async(get_topK_aux, (keys[(NUM_PROCESSES-1)*chunk_size:],))
         result_list.append(res)
+        pool.close()
+        pool.join()
         doc_list = []
         for res in result_list:
             doc_list += res.get()
