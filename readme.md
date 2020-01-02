@@ -3,7 +3,7 @@
 Based on Vector Space Model.
 
 Packages required: `pip3 install numpy, jieba, pandas, numba, pathos`
-`
+
 You can use it with running `main_non_supervised_model.py` (I use python3.7).
 You may lower `content_prop` to speed up the process (with worse result), and tuning `title_weight` to improve the result.
 ### Problems
